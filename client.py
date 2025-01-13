@@ -1,10 +1,10 @@
 import ssl
 import socket
+import threading
 
 # כתובת השרת
 HOST = '127.0.0.1'
 PORT = 8443
-
 
 # יצירת סוקט TLS מאובטח
 def create_tls_client(host, port):
@@ -18,16 +18,30 @@ def create_tls_client(host, port):
     secure_socket = context.wrap_socket(client_socket, server_hostname=host)
     return secure_socket
 
-
+# טיפול בקבלת נתונים מהשרת
+def receive_data(client_socket):
+    while True:
+        data = client_socket.recv(1024)
+        if not data:
+            break
+        print(f"Received: {data.decode()}")
 
 # הפעלת הלקוח
 def run_client():
     client = create_tls_client(HOST, PORT)
-    client.sendall(b"Hello, TLS server!")
-    data = client.recv(1024)
-    print(f"Received: {data.decode()}")
-    client.close()
 
+    # התחלת thread שמאזין למידע מהשרת
+    receive_thread = threading.Thread(target=receive_data, args=(client,))
+    receive_thread.start()
+
+    # שליחת נתונים לשרת
+    while True:
+        message = input("Enter message to send: ")
+        client.sendall(message.encode())
+        if message.lower() == "exit":
+            break
+
+    client.close()
 
 if __name__ == "__main__":
     run_client()
