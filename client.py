@@ -6,42 +6,56 @@ import threading
 HOST = '127.0.0.1'
 PORT = 8443
 
-# יצירת סוקט TLS מאובטח
-def create_tls_client(host, port):
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 
-    # ציון מיקום התעודה של השרת
-    context.load_verify_locations('C:\\Users\\reuve\\PycharmProjects\\pythonProject30\\server.crt')
+class SecureClient:
+    def __init__(self, host, port, cert_path):
+        self.host = host
+        self.port = port
+        self.important = ""
+        self.cert_path = cert_path
+        self.client_socket = None
+        self.secure_socket = None
 
-    # שימוש ב-TLS
-    client_socket = socket.create_connection((host, port))
-    secure_socket = context.wrap_socket(client_socket, server_hostname=host)
-    return secure_socket
+    # יצירת סוקט TLS מאובטח
+    def create_tls_client(self):
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 
-# טיפול בקבלת נתונים מהשרת
-def receive_data(client_socket):
-    while True:
-        data = client_socket.recv(1024)
-        if not data:
-            break
-        print(f"Received: {data.decode()}")
+        # ציון מיקום התעודה של השרת
+        context.load_verify_locations(self.cert_path)
 
-# הפעלת הלקוח
-def run_client():
-    client = create_tls_client(HOST, PORT)
+        # שימוש ב-TLS
+        self.client_socket = socket.create_connection((self.host, self.port))
+        self.secure_socket = context.wrap_socket(self.client_socket, server_hostname=self.host)
 
-    # התחלת thread שמאזין למידע מהשרת
-    receive_thread = threading.Thread(target=receive_data, args=(client,))
-    receive_thread.start()
+    def set_import(self):
+        self.important = ""
 
-    # שליחת נתונים לשרת
-    while True:
-        message = input("Enter message to send: ")
-        client.sendall(message.encode())
-        if message.lower() == "exit":
-            break
+    # טיפול בקבלת נתונים מהשרת
+    def receive_data(self):
+        while True:
+            data = self.secure_socket.recv(1024)
+            if not data:
+                break
+            if data != "Hello, TLS client!":
+                self.important = data
+            print(f"Received: {data.decode()}")
 
-    client.close()
+    # שליחת הודעה לשרת
+    def send_message(self, message):
+        self.secure_socket.sendall(message.encode())
+
+    # הפעלת הלקוח
+    def run(self):
+        self.create_tls_client()
+
+        # התחלת thread שמאזין למידע מהשרת
+        receive_thread = threading.Thread(target=self.receive_data)
+        receive_thread.start()
 
 if __name__ == "__main__":
-    run_client()
+    client = SecureClient(HOST, PORT, 'C:\\Users\\reuve\\PycharmProjects\\pythonProject30\\server.crt')
+    client.run()
+
+    # כאן אפשר לשלוח הודעות כאשר רוצים
+    message = "insert facebook ido 12345"
+    client.send_message(message)
