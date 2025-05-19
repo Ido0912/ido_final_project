@@ -9,9 +9,14 @@ import numpy as np
 from tensorflow.keras.models import load_model
 import dlib
 from scipy.spatial import distance
-from hash import SHA256
+from encryption.hash import SHA256
+from facerecognition.putting import FrameCapturer
 from client import SecureClient
+from facerecognition.face import FaceCropper
 import os
+import pandas as pd
+from encryption.aes import AESEncryption
+import ast
 
 
 attempts = 0
@@ -23,7 +28,7 @@ sender_email = "reuveniido3@gmail.com"
 receiver_email = "reuveniido10@gmail.com"
 password = ""
 IMG_SIZE = 50
-model = load_model("face_recognition_model.h5")
+num = 0
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 predictor_path = "shape_predictor_68_face_landmarks.dat"
 face_detector = dlib.get_frontal_face_detector()
@@ -31,12 +36,19 @@ shape_predictor = dlib.shape_predictor(predictor_path)
 sha256 = SHA256()
 HOST = '127.0.0.1'
 PORT = 8443
-client = SecureClient(HOST, PORT, 'C:\\Users\\reuve\\PycharmProjects\\pythonProject30\\server.crt')
+client = SecureClient(HOST, PORT, 'keys\server.crt')
 client.run()
 send_str = ""
 idle_time = 0
-end_screen = None  # משתנה גלובלי למסך הראשי
+end_screen = None
 overlay_window = None
+file_path = r"users.xlsx"
+user_name = ""
+face_cropper = FaceCropper()
+model = None
+KEY_FILE = "keys/server.key"
+aes = AESEncryption(KEY_FILE)
+side_window = None
 
 
 def calculate_ear(eye):
@@ -73,9 +85,25 @@ def generate_random_password():
 
 def send_code_to_email():
     success_screen.pack_forget()
+    df = pd.read_excel(file_path, header=None).dropna()
+    df[0] = df[0].astype(str)
+    requested_username = user_name
+    decrypted_email = ""
+    hashed_username = str(sha256.compute_hash(requested_username.encode('utf-8')))
+    for index, row in df.iterrows():
+        encrypted_username = row[0]
+        email_encrypted_str = row[2]
+        if encrypted_username == hashed_username:
+            try:
+                email_encrypted_bytes = ast.literal_eval(email_encrypted_str)
+                if not isinstance(email_encrypted_bytes, bytes):
+                    raise ValueError("Decryption failed: Converted value is not bytes")
+                decrypted_email = aes.decrypt(email_encrypted_bytes)
+            except Exception as e:
+                print(f"Decryption failed: {e}")
     generated_password = generate_random_password()
     message = f"""From: From Person <reuveniido3@gmail.com>
-To: To Person <reuveniido10@gmail.com>
+To: To Person <{decrypted_email}>
 Subject: Password
 
 Your new password is: {generated_password}
@@ -84,14 +112,14 @@ Your new password is: {generated_password}
         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
         server.ehlo()
         server.login(sender_email, "dbrj lpbp fnkj qslo")
-        server.sendmail(sender_email, receiver_email, message)
+        server.sendmail(sender_email, decrypted_email, message)
         server.close()
-        print("Password sent to email!")
+        print(f"Password sent to email {decrypted_email}!")
     except Exception as exception:
         print(f"Error: {exception}")
     send_code_screen = tk.Frame(root, bg="#f5f5f5")
     send_code_screen.pack(fill="both", expand=True)
-    send_label = tk.Label(send_code_screen, text="Send!",
+    send_label = tk.Label(send_code_screen, text=f"Send to {decrypted_email}!",
                           font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
     send_label.pack(pady=40)
     password_label = tk.Label(send_code_screen, text="Enter Password:",
@@ -162,21 +190,39 @@ def show_password_screen():
 
 
 def check_password(event=None):
-    global attempts
+    global attempts, model, user_name
+    flag = False
+    entered_username = username_entry.get()
     entered_password = password_entry.get()
-    correct_password = "23719aa47cfdfc024ce5977fc6f963148809647abe152ac71d073237e865739d"
-    result = str(sha256.compute_hash(entered_password.encode('utf-8')))
-    if result == correct_password:
+    if not entered_username or not entered_password:
+        messagebox.showwarning("Missing Information", "Please enter both username and password.")
+        return
+    result_password = str(sha256.compute_hash(entered_password.encode('utf-8')))
+    result_username = str(sha256.compute_hash(entered_username.encode('utf-8')))
+    df = pd.read_excel(file_path, usecols=[0, 1], header=None)
+    df = df.dropna()
+    match = False
+    for index, row in df.iterrows():
+        stored_username = row[0]
+        stored_password = row[1]
+        if result_username == stored_username and result_password == stored_password:
+            match = True
+            break
+    if match is True:
         password_screen.pack_forget()
+        user_name = entered_username
+        model_path = rf"C:\Users\reuve\PycharmProjects\pythonProject33\models\face_recognition_{user_name}.h5"
+        model = load_model(model_path)
         open_success_screen()
     else:
         attempts += 1
+        username_entry.delete(0, tk.END)
         password_entry.delete(0, tk.END)
         if attempts >= MAX_ATTEMPTS:
             lock_application()
         elif attempts % 3 == 0:
             messagebox.showwarning(
-                "Incorrect Password", f"Incorrect password! Attempts left: {MAX_ATTEMPTS - attempts}"
+                "Incorrect Information", f"Incorrect Information! Attempts left: {MAX_ATTEMPTS - attempts}"
             )
 
 
@@ -232,35 +278,27 @@ def predict_face(face):
 
 
 def reset_timer(event=None):
-    """איפוס הטיימר כאשר העכבר זז - סגירת חלון האזהרה אם קיים"""
     global idle_time, overlay_window
     idle_time = 0
-    # אם חלון האזהרה פתוח - נסגור אותו
     if overlay_window and overlay_window.winfo_exists():
         overlay_window.destroy()
-        overlay_window = None  # מאפסים את המשתנה כדי לאפשר פתיחה מחדש
+        overlay_window = None
+
 
 def update_timer():
-    """מעקב אחר חוסר פעילות והפעלת אזהרה / סגירה בהתאם"""
     global idle_time
     idle_time += 1
-
-    # אם אין תזוזה למשך 30 שניות - הצגת חלון האזהרה
     if idle_time == 30 and (overlay_window is None or not overlay_window.winfo_exists()):
         show_overlay_window()
-
-    # אם אין תזוזה למשך 60 שניות - סגירת המערכת
-    elif idle_time == 60:
+    elif idle_time == 61:
         close_all()
-
-    # קריאה חוזרת כל שנייה
     root.after(1000, update_timer)
 
+
 def show_overlay_window():
-    """הצגת חלון overlay שיתעדכן עם הזמן הנותר"""
     global overlay_window
     if overlay_window and overlay_window.winfo_exists():
-        return  # אם החלון כבר קיים, לא לפתוח שוב
+        return
     overlay_window = tk.Toplevel(root)
     overlay_window.geometry("500x200")
     overlay_window.configure(bg="black")
@@ -274,33 +312,42 @@ def show_overlay_window():
     time_remaining_label.pack(expand=True)
     overlay_window.after(1000, update_overlay_time, time_remaining_label)
 
+
 def update_overlay_time(time_remaining_label):
-    """עדכון הזמן הנותר בהודעת ה-overlay"""
     global idle_time
     remaining_time = 60 - idle_time
     time_remaining_label.config(text=f"Closing in {remaining_time} seconds")
     if remaining_time > 0:
-        overlay_window.after(1000, update_overlay_time, time_remaining_label)  # עדכון כל שנייה
+        overlay_window.after(1000, update_overlay_time, time_remaining_label)
     else:
-        close_all()  # סוגרים את התוכנית כשהזמן מגיע ל-0
+        close_all()
+
 
 def open_end_screen():
-    """פתיחת מסך הפעולות הראשי"""
+    print(user_name)
     global end_screen
     if end_screen and end_screen.winfo_exists():
-        return  # לא לפתוח שוב אם כבר קיים
+        return
     root.withdraw()
     end_screen = tk.Toplevel(root, bg="#f5f5f5")
     end_screen.title("Safe - What to do?")
+    end_screen.config(highlightbackground="black", highlightthickness=2)
     end_screen.geometry("650x550")
+    mikud(end_screen)
     end_screen.after(1, center_window, end_screen, 650, 550)
     root.bind_all("<Motion>", reset_timer)
     header_label = tk.Label(end_screen, text="What do you want to do in the safe?", font=("Arial", 24, "bold"),
                             fg="black", bg="#f5f5f5")
-    header_label.pack(pady=40)
+    header_label.pack(pady=20)
     add_info_button = tk.Button(end_screen, text="Add Information", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white",
                                 width=25, height=1, relief="raised", bd=4, command=open_add_info_screen)
     add_info_button.pack(pady=15)
+    email_button = tk.Button(end_screen, text="Change Email", font=("Arial", 18, "bold"), bg="#e74c3c",
+                                fg="white", width=25, height=1, relief="raised", bd=4, command=open_change_email)
+    email_button.pack(pady=15)
+    face_recognize_button = tk.Button(end_screen, text="Update Face Recognition", font=("Arial", 18, "bold"), bg="#e74c3c",
+                             fg="white", width=25, height=1, relief="raised", bd=4, command=update_face_recognition)
+    face_recognize_button.pack(pady=15)
     other_action_button = tk.Button(end_screen, text="Other Action", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white",
                                     width=25, height=1, relief="raised", bd=4, command=open_other_action_screen)
     other_action_button.pack(pady=15)
@@ -311,10 +358,82 @@ def open_end_screen():
 
 
 def close_all():
+    if face_cropper.is_processing():
+        messagebox.showinfo("Processing", "Processes are still running, please wait...")
+        return
     client.client_socket.close()
     root.destroy()
     client.send_message("---")
     os._exit(0)
+
+
+def open_change_email():
+    email_screen = tk.Toplevel(root, bg="#f5f5f5")
+    email_screen.grab_set()
+    mikud(email_screen)
+    email_screen.config(highlightbackground="black", highlightthickness=2)
+
+    tk.Label(email_screen, text="Enter a New Email:", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5",
+             width=25, height=2).pack(pady=20)
+    email_entry = tk.Entry(email_screen, font=("Arial", 18), width=30)
+    email_entry.pack(pady=5)
+
+    def submit_email():
+        email = email_entry.get()
+        if email:
+            df = pd.read_excel(file_path, header=None).dropna()
+            df[0] = df[0].astype(str)
+            requested_username = user_name
+            hashed_username = str(sha256.compute_hash(requested_username.encode('utf-8')))
+            encrypted_email = aes.encrypt(email)
+            df.loc[df[0] == hashed_username, 2] = encrypted_email
+            df.to_excel(file_path, index=False, header=False)
+            print(encrypted_email)
+            email_screen.destroy()
+        else:
+            messagebox.showerror("Error", "Please enter an email address.")
+
+    submit_button = tk.Button(email_screen, text="Submit", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white",
+                              width=25, height=1, relief="raised", bd=4, command=submit_email)
+    submit_button.pack(pady=20)
+
+    back_button = tk.Button(email_screen, text="Back", font=("Arial", 18, "bold"), bg="black", fg="white", width=25,
+                            height=1, relief="raised", bd=4, command=email_screen.destroy)
+    back_button.pack(pady=10)
+
+    email_screen.after(1, lambda: center_window(email_screen, email_screen.winfo_width(), email_screen.winfo_height()))
+
+
+def clear_folder(folder_path):
+    if not os.path.exists(folder_path):
+        print(f"The folder '{folder_path}' does not exist.")
+        return
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Failed to delete {file_path}: {e}")
+
+    print(f"All files in '{folder_path}' have been deleted.")
+
+
+def update_face_recognition():
+    if side_window and side_window.winfo_exists():
+        messagebox.showwarning("Warning", "Face recognition cannot be changed while the system is initializing data.")
+        return
+    create_face_screen = tk.Toplevel(root, bg="#f5f5f5")
+    create_face_screen.grab_set()
+    mikud(create_face_screen)
+    clear_folder(rf"C:\Users\reuve\PycharmProjects\pythonProject33\train_data\{user_name}")
+    clear_folder(rf"C:\Users\reuve\PycharmProjects\pythonProject33\cropped_data\{user_name}")
+    frame_capturer = FrameCapturer(user_name, create_face_screen)
+    root.wait_window(create_face_screen)
+    face_cropper.set_info(user_name)
+    face_cropper.start_processing_in_thread()
+    create_side_window()
+    open_end_screen()
 
 
 def open_add_info_screen():
@@ -322,6 +441,8 @@ def open_add_info_screen():
     add_info_screen.title("Add Information")
     add_info_screen.grab_set()
     mikud(add_info_screen)
+    add_info_screen.config(highlightbackground="black", highlightthickness=2)
+
     tk.Label(add_info_screen, text="Add Your Information", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5",
              width=25, height=2).pack(pady=20)
     tk.Label(add_info_screen, text="Content:", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(pady=5)
@@ -335,41 +456,39 @@ def open_add_info_screen():
     password_entry.pack(pady=5)
 
     def submit_information():
-        content = content_entry.get()
-        username = username_entry.get()
-        password = password_entry.get()
+        content = content_entry.get().strip()
+        username = username_entry.get().strip()
+        password = password_entry.get().strip()
 
         if content and username and password:
             client.send_message("send")
-            time.sleep(0.5)  # המתנה לתשובה מהשרת
-
+            time.sleep(0.5)
             word_options = client.important.splitlines()
             word_options = word_options[1:]
-            str = ""
-            for i in range(len(word_options)):
-                word = word_options[i].decode()  # המרת bytes ל-str
-                str = str + word
-            if content in str:
-                messagebox.showerror("Error", f"The content '{content}' already exists.")
+            existing_contents = [word.decode() for word in word_options]
+            user_contents = [entry.split(":", 1)[1] for entry in existing_contents if entry.startswith(user_name + ":")]
+            if content in user_contents:
+                messagebox.showerror("Error", f"The content '{content}' already exists for user '{user_name}'.")
                 content_entry.delete(0, tk.END)
                 username_entry.delete(0, tk.END)
                 password_entry.delete(0, tk.END)
             else:
                 messagebox.showinfo("Information Added", f"Insert {content} + {username} + {password}")
-                send_str = f"insert {content} {username} {password}"
+                send_str = f"insert {user_name}:{content} {username} {password}"
                 client.send_message(send_str)
-                add_info_screen.destroy()  # חזרה למסך הסיום
+                add_info_screen.destroy()
         else:
             messagebox.showerror("Error", "Please fill out all fields.")
 
-    submit_button = tk.Button(add_info_screen, text="Submit", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white", width=25,
+    submit_button = tk.Button(add_info_screen, text="Submit", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white",
+                              width=25,
                               height=1, relief="raised", bd=4, command=submit_information)
     submit_button.pack(pady=20)
     back_button = tk.Button(add_info_screen, text="Back", font=("Arial", 18, "bold"), bg="black", fg="white", width=25,
                             height=1, relief="raised", bd=4, command=add_info_screen.destroy)
     back_button.pack(pady=10)
-    add_info_screen.after(1, lambda: center_window(add_info_screen, add_info_screen.winfo_width(),
-                                                   add_info_screen.winfo_height()))
+
+    add_info_screen.after(1, lambda: center_window(add_info_screen, add_info_screen.winfo_width(), add_info_screen.winfo_height()))
 
 
 def open_other_action_screen():
@@ -377,6 +496,7 @@ def open_other_action_screen():
     other_action_screen = tk.Toplevel(root, bg="#f5f5f5")
     mikud(other_action_screen)
     other_action_screen.grab_set()
+    other_action_screen.config(highlightbackground="black", highlightthickness=2)
     tk.Label(other_action_screen, text="Additional Actions", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5").pack(pady=20)
     update_button = tk.Button(other_action_screen, text="Update", font=("Arial", 14, "bold"), bg="#e74c3c", fg="white",
                               width=25, height=2, relief="raised", bd=4, command=open_update_screen)
@@ -393,33 +513,32 @@ def open_other_action_screen():
     other_action_screen.after(1, lambda: center_window(other_action_screen, other_action_screen.winfo_width(),
                                                        other_action_screen.winfo_height()))
 
+
 def open_update_screen():
-    # Create the Update Information screen
     update_screen = tk.Toplevel(root, bg="#f5f5f5")
     update_screen.title("Update Information")
     update_screen.grab_set()
+    update_screen.config(highlightbackground="black", highlightthickness=2)
     mikud(update_screen)
+    update_screen.after(100, update_screen.update_idletasks)
     client.send_message("send")
     time.sleep(0.5)
-
-    # Check if there is any content to update
-    word_options = client.important.splitlines()
-    word_options = word_options[1:]
-
-    # If there is no content to update, display a message and close the screen
-    if not word_options:
-        messagebox.showinfo("No Content to Update", "There is no content available to update.")
-        update_screen.destroy()  # Close the update screen
+    important_content = client.important.decode("utf-8") if isinstance(client.important, bytes) else client.important
+    word_options = important_content.splitlines()
+    user_contents = [line.split(":")[1] for line in word_options if line.startswith(f"{user_name}:")]
+    if not user_contents:
+        messagebox.showinfo("No Content to Update", "There is no content available to update")
+        update_screen.destroy()
         return
 
     client.set_import()
-
-    tk.Label(update_screen, text="Update Information", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5",
-             width=25, height=2).pack(pady=20)
+    tk.Label(update_screen, text="Update Information", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5", width=25,
+             height=2).pack(pady=20)
     tk.Label(update_screen, text="Select a content", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(pady=5)
+
     selected_word = tk.StringVar(update_screen)
-    selected_word.set(word_options[0])  # ברירת מחדל
-    word_menu = tk.OptionMenu(update_screen, selected_word, *word_options)
+    selected_word.set(user_contents[0])  # ברירת מחדל
+    word_menu = tk.OptionMenu(update_screen, selected_word, *user_contents)
     word_menu.config(font=("Arial", 18, "bold"), width=25)
     word_menu.pack(pady=5)
     tk.Label(update_screen, text="Select 'Password' or 'Username':", font=("Arial", 18, "bold"), fg="black",
@@ -430,25 +549,23 @@ def open_update_screen():
     type_menu = tk.OptionMenu(update_screen, selected_type, *type_options)
     type_menu.config(font=("Arial", 18, "bold"), width=25)
     type_menu.pack(pady=5)
+
     tk.Label(update_screen, text="Enter the new value", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(
         pady=5)
     password_entry = tk.Entry(update_screen, font=("Arial", 18, "bold"), width=25, show="*")
     password_entry.pack(pady=5)
 
-    # Submit button to handle the update
     def submit_update():
-        selected_word_value = selected_word.get()
-        selected_word_value = selected_word_value.replace("'","")
-        selected_word_value = selected_word_value[1:]
-        print(selected_word_value)
+        selected_word_value = selected_word.get()  # הסרת שם המשתמש מהתוכן
         selected_type_value = selected_type.get()
         new_password = password_entry.get()
+
         if new_password:
-            messagebox.showinfo("Update Successful", f"Updated {selected_type_value} for {selected_word_value}.")
-            # Here, send the updated info to the server or process as needed
-            send_str = "update " + selected_word_value + " " + selected_type_value + " " + new_password
+            updated_content = f"{user_name}:{selected_word_value}"  # שמירה בפורמט "שם משתמש:תוכן"
+            messagebox.showinfo("Update Successful", f"Updated {selected_type_value} for {updated_content}.")
+            send_str = f"update {updated_content} {selected_type_value} {new_password}"
             client.send_message(send_str)
-            update_screen.destroy()  # Close the update screen
+            update_screen.destroy()
             other_action_screen.grab_set()
         else:
             messagebox.showerror("Error", "Please enter a new password.")
@@ -460,64 +577,59 @@ def open_update_screen():
     submit_button = tk.Button(update_screen, text="Update", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white",
                               width=25, height=1, relief="raised", bd=4, command=submit_update)
     submit_button.pack(pady=10)
-    back_button = tk.Button(update_screen, text="Back", font=("Arial", 18, "bold"), bg="black", fg="white",
-                            width=25, height=1, relief="raised", bd=4, command=back_to_previous)
+
+    back_button = tk.Button(update_screen, text="Back", font=("Arial", 18, "bold"), bg="black", fg="white", width=25,
+                            height=1, relief="raised", bd=4, command=back_to_previous)
     back_button.pack(pady=10)
+
     update_screen.after(1,
                         lambda: center_window(update_screen, update_screen.winfo_width(), update_screen.winfo_height()))
 
 
 def open_show_screen():
-    # Create the Show Information screen
     show_screen = tk.Toplevel(root, bg="#f5f5f5")
     show_screen.title("Show Information")
     show_screen.grab_set()
+    show_screen.config(highlightbackground="black", highlightthickness=2)
     mikud(show_screen)
+    show_screen.after(100, show_screen.update_idletasks)
     client.send_message("send")
     time.sleep(0.5)
-    # Check if there is any content to show
-    word_options = client.important.splitlines()
-    word_options = word_options[1:]
-
-    # If there is no content to show, display a message and close the screen
-    if not word_options:
+    important_content = client.important.decode("utf-8") if isinstance(client.important, bytes) else client.important
+    word_options = important_content.splitlines()
+    user_contents = [line.split(":")[1] for line in word_options if line.startswith(f"{user_name}:")]
+    if not user_contents:
         messagebox.showinfo("No Content to Show", "There is no content available to display.")
-        show_screen.destroy()  # Close the show screen
+        show_screen.destroy()
         return
 
     client.set_import()
+
     tk.Label(show_screen, text="Choose information to see", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5", width=25,
              height=2).pack(pady=20)
     tk.Label(show_screen, text="Select a content", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(pady=5)
     selected_word = tk.StringVar(show_screen)
-    selected_word.set(word_options[0])  # Default value
-    word_menu = tk.OptionMenu(show_screen, selected_word, *word_options)
+    selected_word.set(user_contents[0])
+    word_menu = tk.OptionMenu(show_screen, selected_word, *user_contents)
     word_menu.config(font=("Arial", 18, "bold"), width=25)
     word_menu.pack(pady=5)
-    tk.Label(show_screen, text="Select 'Password' or 'Username':", font=("Arial", 18,  "bold"), fg="black", bg="#f5f5f5").pack(
-        pady=5)
+    tk.Label(show_screen, text="Select 'Password' or 'Username':", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(pady=5)
     type_options = ["password", "username"]
     selected_type = tk.StringVar(show_screen)
-    selected_type.set(type_options[0])  # Default value
+    selected_type.set(type_options[0])
     type_menu = tk.OptionMenu(show_screen, selected_type, *type_options)
     type_menu.config(font=("Arial", 18, "bold"), width=25)
     type_menu.pack(pady=5)
     result_label = tk.Label(show_screen, text="", font=("Arial", 18, "bold"), fg="red", bg="#f5f5f5", height=2)
     result_label.pack(pady=5)
 
-    # Function to handle the display of the selected information
     def show_information():
         selected_word_value = selected_word.get()
-        selected_word_value = selected_word_value.replace("'", "")
-        selected_word_value = selected_word_value[1:]
         selected_type_value = selected_type.get()
-
-        # Send request to retrieve the information from the server
-        send_str = f"show {selected_word_value} {selected_type_value}"
+        send_str = f"show {user_name}:{selected_word_value} {selected_type_value}"
         client.send_message(send_str)
-        time.sleep(0.5)  # Allow time for the server to respond
+        time.sleep(0.5)
 
-        # Display the result
         result_label.config(text=f"{selected_type_value.capitalize()}: {client.important.decode()}")
         show_screen.grab_set()
         client.set_import()
@@ -529,26 +641,26 @@ def open_show_screen():
     submit_button = tk.Button(show_screen, text="Show", font=("Arial", 18, "bold"), bg="#e74c3c", fg="white", width=25,
                               height=1, relief="raised", bd=4, command=show_information)
     submit_button.pack(pady=10)
-    back_button = tk.Button(show_screen, text="Back", font=("Arial", 18,  "bold"), bg="black", fg="white", width=25, height=1,
-                            relief="raised", bd=4, command=back_to_previous)
+
+    back_button = tk.Button(show_screen, text="Back", font=("Arial", 18, "bold"), bg="black", fg="white", width=25,
+                            height=1, relief="raised", bd=4, command=back_to_previous)
     back_button.pack(pady=10)
     show_screen.after(1, lambda: center_window(show_screen, show_screen.winfo_width(), show_screen.winfo_height()))
 
 
 def open_delete_screen():
-    # Create the Delete Information screen
     delete_screen = tk.Toplevel(root, bg="#f5f5f5")
     delete_screen.title("Delete Information")
     delete_screen.grab_set()
-    mikud(delete_screen)  # מוודא שהמסך מתמקד
+    delete_screen.config(highlightbackground="black", highlightthickness=2)
+    mikud(delete_screen)  # Ensure the screen is focused
+    delete_screen.after(100, delete_screen.update_idletasks)
     client.send_message("send")
     time.sleep(0.5)
+    important_content = client.important.decode("utf-8") if isinstance(client.important, bytes) else client.important
+    word_options = [line for line in important_content.splitlines() if line.startswith(f"{user_name}:")]
+    word_options = [line.split(":")[1].strip() for line in word_options]
 
-    # Check if there is any content to delete
-    word_options = client.important.splitlines()
-    word_options = word_options[1:]
-
-    # If there are no items to delete, show a message and return to the Safe screen
     if not word_options:
         messagebox.showinfo("No Content to Delete", "There is no content available to delete.")
         delete_screen.destroy()  # Close the delete screen
@@ -556,24 +668,20 @@ def open_delete_screen():
 
     client.set_import()
 
-    # Dropdown menu for selecting a content
     tk.Label(delete_screen, text="Delete Information", font=("Arial", 24, "bold"), fg="black", bg="#f5f5f5",
              width=25, height=2).pack(pady=20)
     tk.Label(delete_screen, text="Select a content", font=("Arial", 18, "bold"), fg="black", bg="#f5f5f5").pack(pady=5)
     selected_word = tk.StringVar(delete_screen)
-    selected_word.set(word_options[0])  # ברירת מחדל
+    selected_word.set(word_options[0])  # Default value
     word_menu = tk.OptionMenu(delete_screen, selected_word, *word_options)
     word_menu.config(font=("Arial", 18, "bold"), width=25)
     word_menu.pack(pady=5)
 
-    # Submit button to handle the delete action
     def submit_delete():
         selected_word_value = selected_word.get()
-        selected_word_value = selected_word_value.replace("'", "")
-        selected_word_value = selected_word_value[1:]
-        print(selected_word_value)
+        print(f"Deleting: {selected_word_value}")
         messagebox.showinfo("Delete Successful", f"Deleted {selected_word_value}.")
-        send_str = "delete " + selected_word_value
+        send_str = f"delete {user_name}:{selected_word_value}"  # Send user-specific delete command
         client.send_message(send_str)
         delete_screen.destroy()  # Close the delete screen
         other_action_screen.grab_set()
@@ -628,7 +736,6 @@ def perform_face_recognition():
                 predicted_class, confidence = predict_face(face)
                 if predicted_class == "me" and confidence > 0.90:
                     detected_in_this_frame = True
-                    # ציור ריבוע סביב הפנים
                     color = (0, 255, 0) if predicted_class == "me" else (0, 0, 255)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
 
@@ -697,6 +804,94 @@ def center_window(root, width, height):
     root.geometry(f"{width}x{height}+{win_x}+{win_y}")
 
 
+def register():
+    password_screen.pack_forget()
+    register_screen = tk.Frame(root, bg="#f5f5f5")
+    register_screen.pack(fill="both", expand=True)
+    register_screen.update_idletasks()  # עדכון המסך
+
+    def back_password_screen():
+        register_screen.pack_forget()
+        password_screen.pack()
+
+    new_username_label = tk.Label(register_screen, text="Enter Username:",
+                                  font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
+    new_username_label.pack(pady=10)
+    new_username_entry = tk.Entry(register_screen, font=("Arial", 16), bd=3, relief="solid", width=15)
+    new_username_entry.pack(pady=10)
+
+    new_password_label = tk.Label(register_screen, text="Enter Password:",
+                                  font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
+    new_password_label.pack(pady=10)
+    new_password_entry = tk.Entry(register_screen, font=("Arial", 16), bd=3, relief="solid", width=15)
+    new_password_entry.pack(pady=10)
+    email_label = tk.Label(register_screen, text="Enter Email:",
+                           font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
+    email_label.pack(pady=10)
+    email_entry = tk.Entry(register_screen, font=("Arial", 16), bd=3, relief="solid", width=15)
+    email_entry.pack(pady=10)
+    submit_button = tk.Button(register_screen, text="Continue", font=("Arial", 18, "bold"), fg="white",
+                              bg="#e74c3c", width=18, height=1, relief="raised", bd=4,
+                              command=lambda: continue_register(new_username_entry, new_password_entry, email_entry,
+                                                                register_screen))
+    submit_button.pack(pady=20)
+    back_button = tk.Button(register_screen, text="Back", font=("Arial", 18, "bold"), fg="white",
+                            bg="black", width=18, height=1, relief="raised", bd=4, command=back_password_screen)
+    back_button.pack(pady=20)
+
+
+def continue_register(new_username_entry, new_password_entry, email_entry, register_screen):
+    entered_username = new_username_entry.get()
+    entered_password = new_password_entry.get()
+    entered_email_entry = email_entry.get()
+    if not entered_username or not entered_password or not entered_email_entry:
+        messagebox.showwarning("Missing Information", "Please enter all the three username password and email")
+        return
+    hashed_username = str(sha256.compute_hash(entered_username.encode('utf-8')))
+    hashed_password = str(sha256.compute_hash(entered_password.encode('utf-8')))
+    encrypted_email = aes.encrypt(entered_email_entry)
+    try:
+        df = pd.read_excel(file_path, header=None)
+    except FileNotFoundError:
+        df = pd.DataFrame(columns=[0, 1, 2])
+    df = df.dropna()
+    if hashed_username in df[0].values:
+        messagebox.showwarning("Username Taken", "This username is already taken. Please choose another one.")
+        return
+    new_data = pd.DataFrame([[hashed_username, hashed_password, encrypted_email]], columns=[0, 1, 2])
+    user_name = entered_username
+    df = pd.concat([df, new_data], ignore_index=True)
+    df.to_excel(file_path, index=False, header=False)
+    messagebox.showinfo("Registration Successful", "Your account has been created successfully!")
+    register_screen.pack_forget()
+    create_face_screen = tk.Frame(root, bg="#f5f5f5")
+    create_face_screen.pack(fill="both", expand=True)
+    frame_capturer = FrameCapturer(user_name, create_face_screen)
+    root.wait_window(create_face_screen)
+    face_cropper.set_info(user_name)
+    face_cropper.start_processing_in_thread()
+    create_side_window()
+    open_end_screen()
+
+
+def create_side_window():
+    global side_window
+    side_window = tk.Toplevel()
+    side_window.configure(bg="black")
+    side_window.overrideredirect(True)
+    side_window.attributes("-topmost", True)
+    label_initializing = tk.Label(side_window, text="Data is initializing", font=("Arial", 24), fg="white", bg="black")
+    label_initializing.pack(pady=10)
+    check_processing_status(side_window)
+
+
+def check_processing_status(side_window):
+    if face_cropper.is_processing():
+        side_window.after(1000, lambda: check_processing_status(side_window))
+    else:
+        side_window.destroy()
+
+
 check_lock_status()
 root = tk.Tk()
 root.title("Safe App")
@@ -719,15 +914,25 @@ password_screen = tk.Frame(root, bg="#f5f5f5")
 root.config(bg="#f5f5f5")
 warning_label = tk.Label(password_screen, text="⚠ Caution! Limited number of attempts!",
                          font=("Arial", 18, "bold"), fg="#e74c3c", bg="#f5f5f5")
-warning_label.grid(row=0, column=0, pady=40, sticky="n")
+warning_label.grid(row=0, column=0, pady=20, sticky="n")
+username_label = tk.Label(password_screen, text="Enter Username:",
+                          font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
+username_label.grid(row=1, column=0, pady=20)
+username_entry = tk.Entry(password_screen, font=("Arial", 16), bd=3, relief="solid", width=15)
+username_entry.grid(row=2, column=0, pady=20)
+username_entry.bind("<Return>", check_password)
+
 password_label = tk.Label(password_screen, text="Enter Password:",
                           font=("Arial", 18, "bold"), fg="#2a2a2a", bg="#f5f5f5")
-password_label.grid(row=1, column=0, pady=20)
+password_label.grid(row=3, column=0, pady=20)
 password_entry = tk.Entry(password_screen, show="*", font=("Arial", 16), bd=3, relief="solid", width=15)
-password_entry.grid(row=2, column=0, pady=20)
+password_entry.grid(row=4, column=0, pady=20)
 password_entry.bind("<Return>", check_password)
 submit_button = tk.Button(password_screen, text="Submit", font=("Arial", 18, "bold"), fg="white",
                           bg="#e74c3c", width=18, height=1, relief="raised", bd=4, command=check_password)
-submit_button.grid(row=3, column=0, pady=40)
-password_screen.rowconfigure(5, weight=1)
+submit_button.grid(row=5, column=0, pady=20)
+register_button = tk.Button(password_screen, text="Create New User", font=("Arial", 18, "bold"), fg="white",
+                          bg="#e74c3c", width=18, height=1, relief="raised", bd=4, command=register)
+register_button.grid(row=6, column=0, pady=20)
+password_screen.rowconfigure(7, weight=1)
 root.mainloop()

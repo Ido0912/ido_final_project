@@ -1,6 +1,5 @@
 class SHA256:
     def __init__(self):
-        # אתחול קבועים פנימיים של SHA256 (K)
         self.K = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
             0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -11,7 +10,6 @@ class SHA256:
             0x64a38f0f, 0x8592b24d, 0x9fae12fd, 0x1bd9adf2,
             0x423e5b6c, 0x68c08e0d, 0x59a59260, 0xe59c9b5b,
         ]
-        # שמירת הערכים ההתחלתיים המקוריים של H
         self.initial_H = [
             0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
@@ -66,7 +64,6 @@ class SHA256:
         self.H[7] = (self.H[7] + h) & 0xFFFFFFFF
 
     def compute_hash(self, message):
-        # אתחול מחדש של H
         self.H = self.initial_H[:]
         message = self.pad_message(message)
         for i in range(0, len(message), 64):
@@ -75,10 +72,9 @@ class SHA256:
         return ''.join(f'{h:08x}' for h in self.H)
 
 
-# דוגמת שימוש
 if __name__ == "__main__":
     sha256 = SHA256()
-    text = "12345"
+    text = "111"
     for i in range(10):
         encrypted_text = sha256.compute_hash(text.encode('utf-8'))
         print(f"הטקסט המוצפן הוא: {encrypted_text}")
